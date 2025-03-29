@@ -1,40 +1,60 @@
 from flask import Flask, request
-from db import registrar_gasto, obter_total
-import datetime
+from twilio.twiml.messaging_response import MessagingResponse
+import sqlite3
+from datetime import datetime
 
 app = Flask(__name__)
 
-@app.route("/", methods=["GET"])
-def home():
-    return "Bot de gastos rodando!"
+# Criar banco e tabela se não existirem
+def init_db():
+    conn = sqlite3.connect('gastos.db')
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS gastos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            valor REAL,
+            descricao TEXT,
+            data TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
 
-@app.route("/mensagem", methods=["POST"])
-def receber_mensagem():
-    mensagem = request.form.get("Body", "").strip()
-    resposta = processar_mensagem(mensagem)
-    return resposta
+init_db()
 
-def processar_mensagem(mensagem):
-    if mensagem.lower().startswith("gasto"):
-        partes = mensagem.split()
-        if len(partes) >= 3:
-            try:
-                valor = float(partes[1].replace(",", "."))
-                categoria = " ".join(partes[2:])
-                registrar_gasto(valor, categoria)
-                return f"Gasto de R${valor:.2f} em '{categoria}' registrado!"
-            except ValueError:
-                return "Formato inválido. Use: Gasto 25 mercado"
+@app.route('/mensagem', methods=['POST'])
+def mensagem():
+    texto = request.form.get('Body').strip()
+    resposta = MessagingResponse()
+
+    try:
+        if texto.lower().startswith('gasto'):
+            partes = texto.split(' ', 2)
+            if len(partes) < 3:
+                resposta.message("Formato inválido. Use: Gasto 20 mercado")
+            else:
+                valor_raw = partes[1].replace(',', '.')
+                valor = float(valor_raw)
+                descricao = partes[2]
+                data = datetime.now().strftime('%Y-%m-%d')
+                conn = sqlite3.connect('gastos.db')
+                c = conn.cursor()
+                c.execute('INSERT INTO gastos (valor, descricao, data) VALUES (?, ?, ?)', (valor, descricao, data))
+                conn.commit()
+                conn.close()
+                resposta.message(f"Gasto de R${valor:.2f} em '{descricao}' registrado!")
+        elif texto.lower() == 'total hoje':
+            hoje = datetime.now().strftime('%Y-%m-%d')
+            conn = sqlite3.connect('gastos.db')
+            c = conn.cursor()
+            c.execute('SELECT SUM(valor) FROM gastos WHERE data = ?', (hoje,))
+            total = c.fetchone()[0] or 0
+            conn.close()
+            resposta.message(f"Total de gastos (hoje): R${total:.2f}")
         else:
-            return "Mensagem incompleta. Use: Gasto 25 mercado"
-    elif "total hoje" in mensagem.lower():
-        return obter_total("hoje")
-    elif "total semana" in mensagem.lower():
-        return obter_total("semana")
-    elif "total mês" in mensagem.lower():
-        return obter_total("mes")
-    else:
-        return "Comando não reconhecido. Use: 'Gasto 25 mercado', 'Total hoje', 'Total semana', 'Total mês'"
+            resposta.message("Comando não reconhecido. Envie por exemplo:\nGasto 25 padaria\nTotal hoje")
+    except Exception as e:
+        resposta.message("Ocorreu um erro ao processar a mensagem.")
+    
+    return str(resposta)
 
-if __name__ == "__main__":
-    app.run()
